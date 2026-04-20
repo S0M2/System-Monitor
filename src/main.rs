@@ -577,7 +577,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         (RED, Modifier::BOLD | Modifier::RAPID_BLINK)
     };
     f.render_widget(
-        Paragraph::new(" System Monitor & RAM Optimizer ")
+        Paragraph::new(" MACEON ")
             .alignment(Alignment::Center)
             .style(Style::default().fg(color).add_modifier(blink))
             .block(
