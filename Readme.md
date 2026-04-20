@@ -1,4 +1,6 @@
-# System Monitor & RAM Optimizer
+# MACEON
+
+Ce projet a été réaliser en colabaration avec Claude code ± 65% du code
 
 [](https://www.rust-lang.org/)
 [](https://opensource.org/licenses/MIT)
