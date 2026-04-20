@@ -1,0 +1,978 @@
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{prelude::*, widgets::*};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
+use sysinfo::{Components, Disks, Networks, System};
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const HISTORY_LEN: usize = 60;
+const TICK_MS: u64 = 1000;
+
+// ─── Color palette ───────────────────────────────────────────────────────────
+const LIME: Color = Color::Rgb(50, 255, 100);
+const CYAN: Color = Color::Rgb(0, 210, 255);
+const PURPLE: Color = Color::Rgb(190, 80, 255);
+const ORANGE: Color = Color::Rgb(255, 145, 0);
+const RED: Color = Color::Rgb(255, 65, 65);
+const GOLD: Color = Color::Rgb(255, 210, 50);
+const DARK: Color = Color::Rgb(20, 20, 30);
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Overview,
+    Processes,
+    Network,
+    Storage,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum SortBy {
+    Cpu,
+    Memory,
+    Pid,
+    Name,
+}
+
+// ─── App state ───────────────────────────────────────────────────────────────
+struct App {
+    sys: System,
+    networks: Networks,
+    components: Components,
+    disks: Disks,
+    last_tick: Instant,
+
+    // Network speeds
+    prev_rx: u64,
+    prev_tx: u64,
+    rx_speed: f64, // KB/s
+    tx_speed: f64,
+
+    // Historical sparklines (0..=100)
+    cpu_hist: Vec<u64>,
+    ram_hist: Vec<u64>,
+
+    // UI state
+    tab: Tab,
+    proc_sel: usize,
+    proc_off: usize,
+    sort_by: SortBy,
+    sort_desc: bool,
+
+    // Alerts
+    alerts: Vec<String>,
+}
+
+impl App {
+    fn new() -> Self {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        Self {
+            sys,
+            networks: Networks::new_with_refreshed_list(),
+            components: Components::new_with_refreshed_list(),
+            disks: Disks::new_with_refreshed_list(),
+            last_tick: Instant::now(),
+            prev_rx: 0,
+            prev_tx: 0,
+            rx_speed: 0.0,
+            tx_speed: 0.0,
+            cpu_hist: vec![0; HISTORY_LEN],
+            ram_hist: vec![0; HISTORY_LEN],
+            tab: Tab::Overview,
+            proc_sel: 0,
+            proc_off: 0,
+            sort_by: SortBy::Cpu,
+            sort_desc: true,
+            alerts: vec![],
+        }
+    }
+
+    fn tick(&mut self) {
+        self.sys.refresh_all();
+        self.networks.refresh(true);
+        self.components.refresh(true);
+        self.disks.refresh(true);
+
+        // ── Network speed ──────────────────────────────────────────────────
+        let (mut cur_rx, mut cur_tx) = (0u64, 0u64);
+        for (_, d) in &self.networks {
+            cur_rx += d.received();
+            cur_tx += d.transmitted();
+        }
+        let dt = self.last_tick.elapsed().as_secs_f64().max(0.001);
+        self.rx_speed = (cur_rx.saturating_sub(self.prev_rx) as f64 / 1024.0) / dt;
+        self.tx_speed = (cur_tx.saturating_sub(self.prev_tx) as f64 / 1024.0) / dt;
+        self.prev_rx = cur_rx;
+        self.prev_tx = cur_tx;
+
+        // ── History ────────────────────────────────────────────────────────
+        let cpu_p = self.sys.global_cpu_usage() as u64;
+        let ram_p = ram_pct_raw(&self.sys);
+        push_history(&mut self.cpu_hist, cpu_p);
+        push_history(&mut self.ram_hist, ram_p);
+
+        // ── Alerts ─────────────────────────────────────────────────────────
+        self.alerts.clear();
+        if cpu_p > 85 {
+            self.alerts.push(format!("⚠ CPU SURCHARGÉ : {}%", cpu_p));
+        }
+        if ram_p > 85 {
+            self.alerts.push(format!("⚠ RAM CRITIQUE  : {}%", ram_p));
+        }
+        let max_t = self
+            .components
+            .iter()
+            .map(|c| c.temperature().unwrap_or(0.0))
+            .fold(0.0f32, f32::max);
+        if max_t > 85.0 {
+            self.alerts
+                .push(format!("⚠ THERMIQUE     : {:.1}°C", max_t));
+        }
+
+        self.last_tick = Instant::now();
+    }
+
+    // Sorted process list (borrowed)
+    fn sorted_procs(&self) -> Vec<(sysinfo::Pid, &sysinfo::Process)> {
+        let mut v: Vec<_> = self
+            .sys
+            .processes()
+            .iter()
+            .map(|(pid, p)| (*pid, p))
+            .collect();
+        match self.sort_by {
+            SortBy::Cpu => v.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap()),
+            SortBy::Memory => v.sort_by(|a, b| b.1.memory().cmp(&a.1.memory())),
+            SortBy::Pid => v.sort_by(|a, b| a.0.cmp(&b.0)),
+            SortBy::Name => v.sort_by(|a, b| a.1.name().cmp(b.1.name())),
+        }
+        if !self.sort_desc {
+            v.reverse();
+        }
+        v
+    }
+
+    fn kill_selected(&mut self) {
+        let procs = self.sorted_procs();
+        if let Some((pid, _)) = procs.get(self.proc_sel) {
+            if let Some(p) = self.sys.process(*pid) {
+                p.kill();
+            }
+        }
+        self.tick();
+    }
+
+    fn optimizer_tips(&self) -> Vec<Line<'static>> {
+        let ram_p = ram_pct_raw(&self.sys);
+        let mut tips: Vec<Line<'static>> = vec![
+            Line::from(vec![
+                Span::styled("  RAM en cours : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.0}%", ram_p),
+                    Style::default()
+                        .fg(grade_color(ram_p as f64))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+
+        if ram_p > 80 {
+            tips.push(Line::styled(
+                "   Top consommateurs RAM (onglet Processus → K pour tuer) :",
+                Style::default().fg(ORANGE),
+            ));
+        } else {
+            tips.push(Line::styled(
+                "   RAM dans les normes — Top 3 processus :",
+                Style::default().fg(LIME),
+            ));
+        }
+
+        let mut procs: Vec<_> = self.sys.processes().values().collect();
+        procs.sort_by(|a, b| b.memory().cmp(&a.memory()));
+        for (i, p) in procs.iter().take(5).enumerate() {
+            let mb = p.memory() as f64 / 1_048_576.0;
+            let color = if i == 0 {
+                RED
+            } else if i == 1 {
+                ORANGE
+            } else {
+                GOLD
+            };
+            let name = p.name().to_string_lossy().to_string();
+            tips.push(Line::from(vec![
+                Span::styled(format!("  {}. ", i + 1), Style::default().fg(color)),
+                Span::styled(
+                    format!("{:<22}", truncate(&name, 22)),
+                    Style::default().fg(CYAN),
+                ),
+                Span::styled(format!("{:>7.1} MB", mb), Style::default().fg(color)),
+            ]));
+        }
+
+        tips.push(Line::raw(""));
+        let cpu_p = self.sys.global_cpu_usage() as f64;
+        if cpu_p > 70.0 {
+            tips.push(Line::styled(
+                format!("   CPU élevé ({:.0}%) — vérifiez les processus", cpu_p),
+                Style::default().fg(ORANGE),
+            ));
+        }
+        tips.push(Line::styled(
+            format!("  Swap utilisé : {}", fmt_bytes(self.sys.used_swap())),
+            Style::default().fg(Color::DarkGray),
+        ));
+        tips
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+fn ram_pct_raw(sys: &System) -> u64 {
+    if sys.total_memory() == 0 {
+        return 0;
+    }
+    (sys.used_memory() as f64 / sys.total_memory() as f64 * 100.0) as u64
+}
+
+fn push_history(v: &mut Vec<u64>, val: u64) {
+    v.push(val);
+    if v.len() > HISTORY_LEN {
+        v.remove(0);
+    }
+}
+
+fn grade_color(pct: f64) -> Color {
+    if pct >= 85.0 {
+        RED
+    } else if pct >= 65.0 {
+        ORANGE
+    } else {
+        LIME
+    }
+}
+
+fn fmt_bytes(b: u64) -> String {
+    match b {
+        b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1 << 20) as f64),
+        b if b >= 1 << 10 => format!("{:.0} KB", b as f64 / (1 << 10) as f64),
+        _ => format!("{} B", b),
+    }
+}
+
+fn fmt_speed(kbs: f64) -> String {
+    if kbs >= 1_048_576.0 {
+        format!("{:.2} GB/s", kbs / 1_048_576.0)
+    } else if kbs >= 1024.0 {
+        format!("{:.2} MB/s", kbs / 1024.0)
+    } else {
+        format!("{:.1} KB/s", kbs)
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+
+    let mut app = App::new();
+    let tick = Duration::from_millis(TICK_MS);
+    let mut last = Instant::now();
+
+    // Visible rows in process table (estimated; adjusted dynamically if needed)
+    const PROC_ROWS: usize = 20;
+
+    loop {
+        terminal.draw(|f| draw(f, &app))?;
+
+        let timeout = tick.saturating_sub(last.elapsed());
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                let proc_count = app.sys.processes().len();
+                match key.code {
+                    // ── Global
+                    KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                    KeyCode::Tab => {
+                        app.tab = match app.tab {
+                            Tab::Overview => Tab::Processes,
+                            Tab::Processes => Tab::Network,
+                            Tab::Network => Tab::Storage,
+                            Tab::Storage => Tab::Overview,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        app.tab = match app.tab {
+                            Tab::Overview => Tab::Storage,
+                            Tab::Processes => Tab::Overview,
+                            Tab::Network => Tab::Processes,
+                            Tab::Storage => Tab::Network,
+                        };
+                    }
+                    // ── Processes navigation
+                    KeyCode::Down if app.tab == Tab::Processes => {
+                        if app.proc_sel + 1 < proc_count {
+                            app.proc_sel += 1;
+                            if app.proc_sel >= app.proc_off + PROC_ROWS {
+                                app.proc_off += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Up if app.tab == Tab::Processes => {
+                        if app.proc_sel > 0 {
+                            app.proc_sel -= 1;
+                            if app.proc_sel < app.proc_off {
+                                app.proc_off = app.proc_off.saturating_sub(1);
+                            }
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Char('K') if app.tab == Tab::Processes => {
+                        app.kill_selected()
+                    }
+                    KeyCode::Char('c') if app.tab == Tab::Processes => {
+                        app.sort_by = SortBy::Cpu;
+                        app.sort_desc = true;
+                    }
+                    KeyCode::Char('m') if app.tab == Tab::Processes => {
+                        app.sort_by = SortBy::Memory;
+                        app.sort_desc = true;
+                    }
+                    KeyCode::Char('p') if app.tab == Tab::Processes => {
+                        app.sort_by = SortBy::Pid;
+                        app.sort_desc = false;
+                    }
+                    KeyCode::Char('n') if app.tab == Tab::Processes => {
+                        app.sort_by = SortBy::Name;
+                        app.sort_desc = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if last.elapsed() >= tick {
+            app.tick();
+            last = Instant::now();
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    Ok(())
+}
+
+// ─── Root layout ─────────────────────────────────────────────────────────────
+fn draw(f: &mut Frame, app: &App) {
+    let alert_h = if app.alerts.is_empty() { 0 } else { 3 };
+    let root = Layout::vertical([
+        Constraint::Length(3),       // header
+        Constraint::Length(3),       // tabs
+        Constraint::Min(0),          // content
+        Constraint::Length(alert_h), // alerts
+        Constraint::Length(3),       // footer
+    ])
+    .split(f.area());
+
+    draw_header(f, app, root[0]);
+    draw_tabs(f, app, root[1]);
+
+    match app.tab {
+        Tab::Overview => draw_overview(f, app, root[2]),
+        Tab::Processes => draw_processes(f, app, root[2]),
+        Tab::Network => draw_network(f, app, root[2]),
+        Tab::Storage => draw_storage(f, app, root[2]),
+    }
+
+    if alert_h > 0 {
+        draw_alerts(f, app, root[3]);
+    }
+    draw_footer(f, app, root[4]);
+}
+
+// ─── Header ──────────────────────────────────────────────────────────────────
+fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let (color, blink) = if app.alerts.is_empty() {
+        (LIME, Modifier::BOLD)
+    } else {
+        (RED, Modifier::BOLD | Modifier::RAPID_BLINK)
+    };
+    f.render_widget(
+        Paragraph::new(" System Monitor & RAM Optimizer ")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(color).add_modifier(blink))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Double)
+                    .border_style(Style::default().fg(color)),
+            ),
+        area,
+    );
+}
+
+// ─── Tabs bar ─────────────────────────────────────────────────────────────────
+fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+    let idx = match app.tab {
+        Tab::Overview => 0,
+        Tab::Processes => 1,
+        Tab::Network => 2,
+        Tab::Storage => 3,
+    };
+    f.render_widget(
+        Tabs::new(vec![
+            "  Overview  ",
+            "  Processus  ",
+            "  Réseau  ",
+            "  Stockage  ",
+        ])
+        .select(idx)
+        .style(Style::default().fg(Color::DarkGray))
+        .highlight_style(Style::default().fg(LIME).add_modifier(Modifier::BOLD))
+        .divider("│")
+        .block(Block::bordered().border_style(Style::default().fg(Color::Rgb(40, 40, 55)))),
+        area,
+    );
+}
+
+// ─── Alerts bar ───────────────────────────────────────────────────────────────
+fn draw_alerts(f: &mut Frame, app: &App, area: Rect) {
+    f.render_widget(
+        Paragraph::new(app.alerts.join("   │   "))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(RED).add_modifier(Modifier::BOLD))
+            .block(
+                Block::bordered()
+                    .title(" ALERTES ")
+                    .border_style(Style::default().fg(RED)),
+            ),
+        area,
+    );
+}
+
+// ─── Footer ───────────────────────────────────────────────────────────────────
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let hint = match app.tab {
+        Tab::Overview => "[TAB] Changer d'onglet   [Q] Quitter",
+        Tab::Processes => {
+            "[↑↓] Naviguer   [K] Tuer   [C] CPU   [M] Mém   [P] PID   [N] Nom   [Q] Quitter"
+        }
+        Tab::Network => "[TAB] Changer d'onglet   [Q] Quitter",
+        Tab::Storage => "[TAB] Changer d'onglet   [Q] Quitter",
+    };
+    f.render_widget(
+        Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::bordered().border_style(Style::default().fg(Color::Rgb(35, 35, 50)))),
+        area,
+    );
+}
+
+// ─── Overview ─────────────────────────────────────────────────────────────────
+fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(area);
+
+    // Left column: gauges
+    let [l0, l1, l2, l3] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Min(0),
+    ])
+    .areas(left);
+
+    // ── CPU gauge
+    let cpu_p = app.sys.global_cpu_usage();
+    let cc = grade_color(cpu_p as f64);
+    f.render_widget(
+        Gauge::default()
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " [ CPU ] {:.1}%  |  {} cœurs ",
+                        cpu_p,
+                        app.sys.cpus().len()
+                    ))
+                    .border_style(Style::default().fg(cc)),
+            )
+            .gauge_style(Style::default().fg(cc).bg(DARK))
+            .percent(cpu_p as u16)
+            .label(format!("{:.1}%", cpu_p)),
+        l0,
+    );
+
+    // ── RAM gauge
+    let ram_used = app.sys.used_memory();
+    let ram_total = app.sys.total_memory();
+    let ram_p = ram_pct_raw(&app.sys);
+    let rc = grade_color(ram_p as f64);
+    f.render_widget(
+        Gauge::default()
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " [ RAM ] {} / {}  ({:.0}%) ",
+                        fmt_bytes(ram_used),
+                        fmt_bytes(ram_total),
+                        ram_p
+                    ))
+                    .border_style(Style::default().fg(rc)),
+            )
+            .gauge_style(Style::default().fg(rc).bg(DARK))
+            .percent(ram_p as u16)
+            .label(format!("{:.0}%", ram_p)),
+        l1,
+    );
+
+    // ── Swap gauge
+    let swap_u = app.sys.used_swap();
+    let swap_t = app.sys.total_swap();
+    let swap_p = if swap_t > 0 {
+        swap_u as f64 / swap_t as f64 * 100.0
+    } else {
+        0.0
+    };
+    f.render_widget(
+        Gauge::default()
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " [ SWAP ] {} / {} ",
+                        fmt_bytes(swap_u),
+                        fmt_bytes(swap_t)
+                    ))
+                    .border_style(Style::default().fg(PURPLE)),
+            )
+            .gauge_style(Style::default().fg(PURPLE).bg(DARK))
+            .percent(swap_p as u16)
+            .label(format!("{:.0}%", swap_p)),
+        l2,
+    );
+
+    // ── Thermal sensors
+    let temp_lines: Vec<Line> = app
+        .components
+        .iter()
+        .map(|c| {
+            let t = c.temperature().unwrap_or(0.0);
+            let col = if t > 85.0 {
+                RED
+            } else if t > 65.0 {
+                ORANGE
+            } else {
+                LIME
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("  {:.<30}", c.label()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:>6.1}°C", t),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(temp_lines).block(
+            Block::bordered()
+                .title(" [ CAPTEURS THERMIQUES ] ")
+                .border_style(Style::default().fg(ORANGE)),
+        ),
+        l3,
+    );
+
+    // Right column: sparklines + optimizer
+    let [r0, r1, r2] = Layout::vertical([
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Min(0),
+    ])
+    .areas(right);
+
+    f.render_widget(
+        Sparkline::default()
+            .block(
+                Block::bordered()
+                    .title(" [ CPU — 60 dernières secondes ] ")
+                    .border_style(Style::default().fg(LIME)),
+            )
+            .data(&app.cpu_hist)
+            .style(Style::default().fg(LIME))
+            .max(100),
+        r0,
+    );
+
+    f.render_widget(
+        Sparkline::default()
+            .block(
+                Block::bordered()
+                    .title(" [ RAM — 60 dernières secondes ] ")
+                    .border_style(Style::default().fg(PURPLE)),
+            )
+            .data(&app.ram_hist)
+            .style(Style::default().fg(PURPLE))
+            .max(100),
+        r1,
+    );
+
+    f.render_widget(
+        Paragraph::new(app.optimizer_tips()).block(
+            Block::bordered()
+                .title(" [ OPTIMIZER — Conseils RAM ] ")
+                .border_style(Style::default().fg(CYAN)),
+        ),
+        r2,
+    );
+}
+
+// ─── Processes ────────────────────────────────────────────────────────────────
+fn draw_processes(f: &mut Frame, app: &App, area: Rect) {
+    let [table_area, detail_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).areas(area);
+
+    let procs = app.sorted_procs();
+    let total_ram = app.sys.total_memory() as f64;
+
+    let sort_label = match app.sort_by {
+        SortBy::Cpu => "CPU ▼",
+        SortBy::Memory => "MEM ▼",
+        SortBy::Pid => "PID ▲",
+        SortBy::Name => "NOM ▲",
+    };
+
+    let header = Row::new(["PID", "NOM", "CPU %", "RAM", "RAM %", "ÉTAT"])
+        .style(
+            Style::default()
+                .fg(LIME)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )
+        .height(1);
+
+    let rows: Vec<Row> = procs
+        .iter()
+        .enumerate()
+        .skip(app.proc_off)
+        .take(50)
+        .map(|(abs_i, (pid, proc))| {
+            let cpu = proc.cpu_usage() as f64;
+            let mem = proc.memory();
+            let mem_p = mem as f64 / total_ram * 100.0;
+            let sel = abs_i == app.proc_sel;
+            let name = proc.name().to_string_lossy().to_string();
+
+            let base = if sel {
+                Style::default().bg(Color::Rgb(30, 50, 70))
+            } else {
+                Style::default()
+            };
+
+            Row::new([
+                Cell::from(pid.to_string()).style(base.fg(Color::DarkGray)),
+                Cell::from(truncate(&name, 28)).style(base.fg(CYAN)),
+                Cell::from(format!("{:.1}", cpu)).style(base.fg(grade_color(cpu))),
+                Cell::from(fmt_bytes(mem)).style(base.fg(grade_color(mem_p))),
+                Cell::from(format!("{:.1}%", mem_p)).style(base.fg(grade_color(mem_p))),
+                Cell::from(format!("{:?}", proc.status())).style(base.fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(8),
+                Constraint::Min(22),
+                Constraint::Length(7),
+                Constraint::Length(11),
+                Constraint::Length(7),
+                Constraint::Length(10),
+            ],
+        )
+        .header(header)
+        .block(
+            Block::bordered()
+                .title(format!(
+                    " [ PROCESSUS ]  {}  |  Tri : {} ",
+                    procs.len(),
+                    sort_label
+                ))
+                .border_style(Style::default().fg(LIME)),
+        )
+        .column_spacing(1),
+        table_area,
+    );
+
+    // ── Selected process detail ───────────────────────────────────────────
+    if let Some((pid, proc)) = procs.get(app.proc_sel) {
+        let cpu = proc.cpu_usage();
+        let mem = proc.memory();
+        let mem_p = mem as f64 / total_ram * 100.0;
+        let name = proc.name().to_string_lossy().to_string();
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  PID : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    pid.to_string(),
+                    Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("   Nom : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(name, Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("  CPU  : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.2}%", cpu),
+                    Style::default().fg(grade_color(cpu as f64)),
+                ),
+                Span::styled("   RAM : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(fmt_bytes(mem), Style::default().fg(grade_color(mem_p))),
+                Span::styled(
+                    format!("  ({:.1}%)", mem_p),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  État : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:?}", proc.status()), Style::default().fg(LIME)),
+                Span::styled(
+                    "         [K] Terminer ce processus",
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ];
+
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::bordered()
+                    .title(" [ PROCESSUS SÉLECTIONNÉ ] ")
+                    .border_style(Style::default().fg(ORANGE)),
+            ),
+            detail_area,
+        );
+    }
+}
+
+// ─── Network ──────────────────────────────────────────────────────────────────
+fn draw_network(f: &mut Frame, app: &App, area: Rect) {
+    let [speeds, ifaces] =
+        Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).areas(area);
+
+    // Global speeds
+    f.render_widget(
+        Paragraph::new(vec![Line::from(vec![
+            Span::styled("  ↓ DOWNLOAD : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                fmt_speed(app.rx_speed),
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("          "),
+            Span::styled("↑ UPLOAD   : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                fmt_speed(app.tx_speed),
+                Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+            ),
+        ])])
+        .block(
+            Block::bordered()
+                .title(" [ VITESSE RÉSEAU GLOBALE ] ")
+                .border_style(Style::default().fg(CYAN)),
+        ),
+        speeds,
+    );
+
+    // Per-interface table
+    let rows: Vec<Row> = app
+        .networks
+        .iter()
+        .map(|(name, d)| {
+            Row::new([
+                Cell::from(name.clone()).style(Style::default().fg(LIME)),
+                Cell::from(fmt_bytes(d.received())).style(Style::default().fg(CYAN)),
+                Cell::from(fmt_bytes(d.transmitted())).style(Style::default().fg(GOLD)),
+                Cell::from(fmt_bytes(d.total_received()))
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(fmt_bytes(d.total_transmitted()))
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(d.packets_received().to_string())
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(d.packets_transmitted().to_string())
+                    .style(Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(16),
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Length(12),
+                Constraint::Length(12),
+            ],
+        )
+        .header(
+            Row::new([
+                "Interface",
+                "RX session",
+                "TX session",
+                "RX total",
+                "TX total",
+                "Pkt RX",
+                "Pkt TX",
+            ])
+            .style(
+                Style::default()
+                    .fg(LIME)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
+        )
+        .block(
+            Block::bordered()
+                .title(" [ INTERFACES RÉSEAU ] ")
+                .border_style(Style::default().fg(LIME)),
+        )
+        .column_spacing(1),
+        ifaces,
+    );
+}
+
+// ─── Storage ──────────────────────────────────────────────────────────────────
+fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
+    let [table_area, gauges_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length((app.disks.iter().count() as u16).min(6) * 3 + 2),
+    ])
+    .areas(area);
+
+    // Table
+    let rows: Vec<Row> = app
+        .disks
+        .iter()
+        .map(|d| {
+            let total = d.total_space();
+            let avail = d.available_space();
+            let used = total.saturating_sub(avail);
+            let pct = if total > 0 {
+                used as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
+            let col = grade_color(pct);
+
+            Row::new([
+                Cell::from(d.mount_point().to_string_lossy().to_string())
+                    .style(Style::default().fg(LIME)),
+                Cell::from(d.name().to_string_lossy().to_string())
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(d.file_system().to_string_lossy().to_string())
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(fmt_bytes(total)),
+                Cell::from(fmt_bytes(used)).style(Style::default().fg(col)),
+                Cell::from(fmt_bytes(avail)).style(Style::default().fg(LIME)),
+                Cell::from(format!("{:.1}%", pct))
+                    .style(Style::default().fg(col).add_modifier(Modifier::BOLD)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(14),
+                Constraint::Min(18),
+                Constraint::Length(8),
+                Constraint::Length(12),
+                Constraint::Length(12),
+                Constraint::Length(12),
+                Constraint::Length(8),
+            ],
+        )
+        .header(
+            Row::new([
+                "Montage",
+                "Périphérique",
+                "FS",
+                "Total",
+                "Utilisé",
+                "Libre",
+                "Usage",
+            ])
+            .style(
+                Style::default()
+                    .fg(LIME)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
+        )
+        .block(
+            Block::bordered()
+                .title(" [ VOLUMES DE STOCKAGE ] ")
+                .border_style(Style::default().fg(LIME)),
+        )
+        .column_spacing(1),
+        table_area,
+    );
+
+    // Gauges per disk
+    let disk_vec: Vec<_> = app.disks.iter().collect();
+    if !disk_vec.is_empty() {
+        let n = disk_vec.len().min(6);
+        let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Length(3)).collect();
+        let gauge_slots = Layout::vertical(constraints).split(gauges_area);
+
+        for (i, d) in disk_vec.iter().take(n).enumerate() {
+            let total = d.total_space();
+            let used = total.saturating_sub(d.available_space());
+            let pct = if total > 0 {
+                (used as f64 / total as f64 * 100.0) as u16
+            } else {
+                0
+            };
+            let col = grade_color(pct as f64);
+            let label = d.mount_point().to_string_lossy().to_string();
+
+            f.render_widget(
+                Gauge::default()
+                    .block(
+                        Block::bordered()
+                            .title(format!(
+                                " {} — {} / {} ",
+                                label,
+                                fmt_bytes(used),
+                                fmt_bytes(total)
+                            ))
+                            .border_style(Style::default().fg(col)),
+                    )
+                    .gauge_style(Style::default().fg(col).bg(DARK))
+                    .percent(pct)
+                    .label(format!("{pct}%")),
+                gauge_slots[i],
+            );
+        }
+    }
+}
