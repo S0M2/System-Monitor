@@ -18,3 +18,4 @@ serde_json = "1.0"
 # Utilities
 log = "0.4"
 regex = "1.10"
+walkdir = "2.4"
