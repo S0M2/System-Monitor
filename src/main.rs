@@ -130,7 +130,15 @@ impl App {
             power_monitor: PowerMonitor::new(),
             disk_analyzer: {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
-                DiskAnalyzer::new(&home)
+                let analyzer = DiskAnalyzer::new(&home);
+                
+                // Request Full Disk Access permission on macOS
+                // This triggers the permission dialog by trying to access protected directories
+                let _ = std::process::Command::new("sh")
+                    .args(&["-c", "ls -la ~/Library/Mail 2>/dev/null | head -1"])
+                    .output();
+                
+                analyzer
             },
             storage_sel: 0,
             last_network_scan: past,
@@ -469,10 +477,6 @@ fn main() -> io::Result<()> {
                     KeyCode::PageUp if app.tab == Tab::Connections => {
                         app.conn_off = app.conn_off.saturating_sub(10);
                     }
-                    // ── Storage scroll
-                    KeyCode::Down if app.tab == Tab::Storage => {
-                        app.storage_off = app.storage_off.saturating_add(1);
-                    }
                     // ── Storage navigation (folder selection)
                     KeyCode::Down if app.tab == Tab::Storage => {
                         if app.storage_sel + 1 < app.disk_analyzer.folders.len() {
@@ -489,6 +493,13 @@ fn main() -> io::Result<()> {
                     KeyCode::Backspace if app.tab == Tab::Storage => {
                         app.disk_analyzer.go_back();
                         app.storage_sel = 0;
+                    }
+                    KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Storage => {
+                        if app.disk_analyzer.open_in_finder(app.storage_sel) {
+                            app.alerts.push(format!("[✓] Ouvert dans Finder"));
+                        } else {
+                            app.alerts.push("[!] Erreur ouverture Finder".to_string());
+                        }
                     }
                     // ── Manual scan (Connections tab)
                     KeyCode::Char('s') | KeyCode::Char('S') if app.tab == Tab::Connections => {
@@ -625,7 +636,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "[↑↓] Naviguer   [K] Tuer   [C] CPU   [M] Mém   [P] PID   [N] Nom   [Q] Quitter"
         }
         Tab::Connections => "[TAB] Changer   [↑↓] Scroller   [S] Scanner   [Q] Quitter",
-        Tab::Storage => "[TAB] Changer   [↑↓] Sélectionner   [Enter] Ouvrir   [BS] Retour   [C] Nettoyer tmp   [Q] Quitter",
+        Tab::Storage => "[TAB] Changer   [↑↓] Sélectionner   [Enter] Ouvrir   [O] Finder   [BS] Retour   [C] Nettoyer   [Q] Quitter",
     };
     f.render_widget(
         Paragraph::new(hint)
