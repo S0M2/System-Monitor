@@ -27,6 +27,7 @@ pub struct GeoLocation {
 #[derive(Debug, Clone)]
 pub struct NetworkThreat {
     pub connection: RemoteConnection,
+    #[allow(dead_code)]
     pub geo: Option<GeoLocation>,
     pub is_whitelisted: bool,
     pub is_suspicious: bool,

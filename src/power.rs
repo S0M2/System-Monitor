@@ -106,6 +106,8 @@ impl PowerMonitor {
         (100.0, 0, 5000, 5000)  // health%, cycles, max_cap, cur_cap (dummy values)
     }
 
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     fn extract_number(&self, line: &str) -> Option<u32> {
         line.split('=')
             .last()

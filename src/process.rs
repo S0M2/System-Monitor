@@ -37,9 +37,13 @@ pub struct ProcessHistory {
 
 #[derive(Debug, Clone)]
 pub struct ProcessThreat {
+    #[allow(dead_code)]
     pub pid: Pid,
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub signature: ProcessSignature,
+    #[allow(dead_code)]
     pub history: ProcessHistory,
     pub is_suspicious: bool,
     pub risk_score: u8, // 0-100
@@ -243,6 +247,7 @@ impl ProcessMonitor {
     }
 
     /// Get signature status for UI display
+    #[allow(dead_code)]
     pub fn get_signature_symbol(&self, process: &ProcessThreat) -> &'static str {
         if process.signature.signature_valid {
             "[OK]"  // Valid signature

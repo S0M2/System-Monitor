@@ -76,6 +76,7 @@ struct App {
     proc_sel: usize,
     proc_off: usize,
     conn_off: usize,       // Scroll offset for connections table
+    #[allow(dead_code)]
     storage_off: usize,    // Scroll offset for storage table
     sort_by: SortBy,
     sort_desc: bool,
@@ -1202,6 +1203,7 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─── Security Threats (Network Exfiltration Detection) ────────────────────────
+#[allow(dead_code)]
 fn draw_security_threats(f: &mut Frame, app: &App, area: Rect) {
     let [summary_area, table_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
@@ -1308,6 +1310,7 @@ fn draw_security_threats(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─── Process Security (Signature & Behavior) ──────────────────────────────────
+#[allow(dead_code)]
 fn draw_process_security(f: &mut Frame, app: &App, area: Rect) {
     let [summary_area, table_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
@@ -1423,6 +1426,7 @@ fn draw_process_security(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+#[allow(dead_code)]
 // ─── Battery (Simplified) ────────────────────────────────────────────────────
 fn draw_battery(f: &mut Frame, app: &App, area: Rect) {
     if let Some(battery) = &app.power_monitor.battery {
