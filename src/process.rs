@@ -4,22 +4,12 @@ use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct ProcessSignature {
     pub is_apple_signed: bool,
     pub is_notarized: bool,
     pub signature_valid: bool,
     pub signer: String,
-}
-
-impl Default for ProcessSignature {
-    fn default() -> Self {
-        Self {
-            is_apple_signed: false,
-            is_notarized: false,
-            signature_valid: false,
-            signer: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +69,7 @@ impl ProcessMonitor {
         for (pid, process) in processes {
             let name = process.name().to_string_lossy().to_string();
             let should_check_signature = checked_count < check_limit
-                || self.processes_history.get(pid).map_or(false, |h| {
+                || self.processes_history.get(pid).is_some_and(|h| {
                     // Re-check if this was previously suspicious
                     self.calculate_risk_score(&ProcessSignature::default(), h, 0.0, 0) > 50
                 });

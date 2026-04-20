@@ -61,22 +61,21 @@ impl NetworkMonitor {
         self.connections.clear();
 
         // Use lsof to get all network connections with PID and process name
-        if let Ok(output) = Command::new("lsof").args(&["-i", "-P", "-n"]).output() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
-                for line in text.lines().skip(1) {
-                    // Format: COMMAND PID ... NAME (where NAME has IP:port->IP:port info)
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 9 {
-                        if let Ok(pid) = parts[1].parse::<u32>() {
-                            let process_name = parts[0].to_string();
-                            let name_info = parts[8..].join(" "); // NAME column may have spaces
+        if let Ok(output) = Command::new("lsof").args(["-i", "-P", "-n"]).output()
+            && let Ok(text) = String::from_utf8(output.stdout)
+        {
+            for line in text.lines().skip(1) {
+                // Format: COMMAND PID ... NAME (where NAME has IP:port->IP:port info)
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 9
+                    && let Ok(pid) = parts[1].parse::<u32>()
+                {
+                    let process_name = parts[0].to_string();
+                    let name_info = parts[8..].join(" "); // NAME column may have spaces
 
-                            if let Some(conn) =
-                                Self::parse_lsof_connection(&name_info, pid, &process_name)
-                            {
-                                self.connections.push(conn);
-                            }
-                        }
+                    if let Some(conn) = Self::parse_lsof_connection(&name_info, pid, &process_name)
+                    {
+                        self.connections.push(conn);
                     }
                 }
             }
@@ -226,28 +225,25 @@ impl NetworkMonitor {
             Ok(client) => match client.get(&url).send() {
                 Ok(response) => match response.text() {
                     Ok(text) => {
-                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if data["status"].as_str() == Some("success") {
-                                let geo = GeoLocation {
-                                    ip: ip.to_string(),
-                                    country: data["country"]
-                                        .as_str()
-                                        .unwrap_or("Unknown")
-                                        .to_string(),
-                                    country_code: data["countryCode"]
-                                        .as_str()
-                                        .unwrap_or("XX")
-                                        .to_string(),
-                                    city: data["city"].as_str().unwrap_or("Unknown").to_string(),
-                                    latitude: data["lat"].as_f64().unwrap_or(0.0),
-                                    longitude: data["lon"].as_f64().unwrap_or(0.0),
-                                    is_risky: Self::is_risky_country(
-                                        data["countryCode"].as_str().unwrap_or("XX"),
-                                    ),
-                                };
-                                self.geo_cache.insert(ip.to_string(), geo.clone());
-                                return Some(geo);
-                            }
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text)
+                            && data["status"].as_str() == Some("success")
+                        {
+                            let geo = GeoLocation {
+                                ip: ip.to_string(),
+                                country: data["country"].as_str().unwrap_or("Unknown").to_string(),
+                                country_code: data["countryCode"]
+                                    .as_str()
+                                    .unwrap_or("XX")
+                                    .to_string(),
+                                city: data["city"].as_str().unwrap_or("Unknown").to_string(),
+                                latitude: data["lat"].as_f64().unwrap_or(0.0),
+                                longitude: data["lon"].as_f64().unwrap_or(0.0),
+                                is_risky: Self::is_risky_country(
+                                    data["countryCode"].as_str().unwrap_or("XX"),
+                                ),
+                            };
+                            self.geo_cache.insert(ip.to_string(), geo.clone());
+                            return Some(geo);
                         }
                     }
                     Err(_) => return None,
@@ -292,7 +288,7 @@ impl NetworkMonitor {
         for conn in &self.connections {
             let is_whitelisted = self.is_whitelisted(&conn.remote_ip);
             let geo = self.geo_cache.get(&conn.remote_ip).cloned();
-            let is_suspicious = geo.as_ref().map_or(false, |g| g.is_risky) && !is_whitelisted;
+            let is_suspicious = geo.as_ref().is_some_and(|g| g.is_risky) && !is_whitelisted;
 
             self.threats.push(NetworkThreat {
                 connection: conn.clone(),

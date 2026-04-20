@@ -133,7 +133,7 @@ impl App {
                 // Request Full Disk Access permission on macOS
                 // This triggers the permission dialog by trying to access protected directories
                 let _ = std::process::Command::new("sh")
-                    .args(&["-c", "ls -la ~/Library/Mail 2>/dev/null | head -1"])
+                    .args(["-c", "ls -la ~/Library/Mail 2>/dev/null | head -1"])
                     .output();
 
                 analyzer
@@ -229,13 +229,13 @@ impl App {
         }
 
         // Check battery health
-        if let Some(battery) = &self.power_monitor.battery {
-            if battery.health_percentage < 50.0 {
-                self.alerts.push(format!(
-                    "[WARN] BATTERIE DÉGRADÉE: {:.0}% santé",
-                    battery.health_percentage
-                ));
-            }
+        if let Some(battery) = &self.power_monitor.battery
+            && battery.health_percentage < 50.0
+        {
+            self.alerts.push(format!(
+                "[WARN] BATTERIE DÉGRADÉE: {:.0}% santé",
+                battery.health_percentage
+            ));
         }
 
         self.last_tick = Instant::now();
@@ -251,8 +251,8 @@ impl App {
             .collect();
         match self.sort_by {
             SortBy::Cpu => v.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap()),
-            SortBy::Memory => v.sort_by(|a, b| b.1.memory().cmp(&a.1.memory())),
-            SortBy::Pid => v.sort_by(|a, b| a.0.cmp(&b.0)),
+            SortBy::Memory => v.sort_by_key(|b| std::cmp::Reverse(b.1.memory())),
+            SortBy::Pid => v.sort_by_key(|a| a.0),
             SortBy::Name => v.sort_by(|a, b| a.1.name().cmp(b.1.name())),
         }
         if !self.sort_desc {
@@ -263,10 +263,10 @@ impl App {
 
     fn kill_selected(&mut self) {
         let procs = self.sorted_procs();
-        if let Some((pid, _)) = procs.get(self.proc_sel) {
-            if let Some(p) = self.sys.process(*pid) {
-                p.kill();
-            }
+        if let Some((pid, _)) = procs.get(self.proc_sel)
+            && let Some(p) = self.sys.process(*pid)
+        {
+            p.kill();
         }
         self.tick();
     }
@@ -299,7 +299,7 @@ impl App {
         }
 
         let mut procs: Vec<_> = self.sys.processes().values().collect();
-        procs.sort_by(|a, b| b.memory().cmp(&a.memory()));
+        procs.sort_by_key(|b| std::cmp::Reverse(b.memory()));
         for (i, p) in procs.iter().take(5).enumerate() {
             let mb = p.memory() as f64 / 1_048_576.0;
             let color = if i == 0 {
@@ -406,131 +406,128 @@ fn main() -> io::Result<()> {
         terminal.draw(|f| draw(f, &app))?;
 
         let timeout = tick.saturating_sub(last.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                let proc_count = app.sys.processes().len();
-                match key.code {
-                    // ── Global
-                    KeyCode::Char('q') | KeyCode::Char('Q') => break,
-                    KeyCode::Tab => {
-                        app.tab = match app.tab {
-                            Tab::Overview => Tab::Processes,
-                            Tab::Processes => Tab::Connections,
-                            Tab::Connections => Tab::Storage,
-                            Tab::Storage => Tab::Overview,
-                        };
-                    }
-                    KeyCode::BackTab => {
-                        app.tab = match app.tab {
-                            Tab::Overview => Tab::Storage,
-                            Tab::Processes => Tab::Overview,
-                            Tab::Connections => Tab::Processes,
-                            Tab::Storage => Tab::Connections,
-                        };
-                    }
-                    // ── Processes navigation
-                    KeyCode::Down if app.tab == Tab::Processes => {
-                        if app.proc_sel + 1 < proc_count {
-                            app.proc_sel += 1;
-                            if app.proc_sel >= app.proc_off + PROC_ROWS {
-                                app.proc_off += 1;
-                            }
-                        }
-                    }
-                    KeyCode::Up if app.tab == Tab::Processes => {
-                        if app.proc_sel > 0 {
-                            app.proc_sel -= 1;
-                            if app.proc_sel < app.proc_off {
-                                app.proc_off = app.proc_off.saturating_sub(1);
-                            }
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Char('K') if app.tab == Tab::Processes => {
-                        app.kill_selected()
-                    }
-                    KeyCode::Char('c') if app.tab == Tab::Processes => {
-                        app.sort_by = SortBy::Cpu;
-                        app.sort_desc = true;
-                    }
-                    KeyCode::Char('m') if app.tab == Tab::Processes => {
-                        app.sort_by = SortBy::Memory;
-                        app.sort_desc = true;
-                    }
-                    KeyCode::Char('p') if app.tab == Tab::Processes => {
-                        app.sort_by = SortBy::Pid;
-                        app.sort_desc = false;
-                    }
-                    KeyCode::Char('n') if app.tab == Tab::Processes => {
-                        app.sort_by = SortBy::Name;
-                        app.sort_desc = false;
-                    }
-                    // ── Connections scroll
-                    KeyCode::Down if app.tab == Tab::Connections => {
-                        app.conn_off = app.conn_off.saturating_add(1);
-                    }
-                    KeyCode::Up if app.tab == Tab::Connections => {
-                        app.conn_off = app.conn_off.saturating_sub(1);
-                    }
-                    KeyCode::PageDown if app.tab == Tab::Connections => {
-                        app.conn_off = app.conn_off.saturating_add(10);
-                    }
-                    KeyCode::PageUp if app.tab == Tab::Connections => {
-                        app.conn_off = app.conn_off.saturating_sub(10);
-                    }
-                    // ── Storage navigation (folder selection)
-                    KeyCode::Down if app.tab == Tab::Storage => {
-                        if app.storage_sel + 1 < app.disk_analyzer.items.len() {
-                            app.storage_sel += 1;
-                        }
-                    }
-                    KeyCode::Up if app.tab == Tab::Storage => {
-                        app.storage_sel = app.storage_sel.saturating_sub(1);
-                    }
-                    KeyCode::Enter if app.tab == Tab::Storage => {
-                        app.disk_analyzer.enter_folder(app.storage_sel);
-                        app.storage_sel = 0; // Reset selection when entering folder
-                    }
-                    KeyCode::Backspace if app.tab == Tab::Storage => {
-                        app.disk_analyzer.go_back();
-                        app.storage_sel = 0;
-                    }
-                    KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Storage => {
-                        if app.disk_analyzer.open_in_finder(app.storage_sel) {
-                            app.alerts.push(format!("[✓] Ouvert dans Finder"));
-                        } else {
-                            app.alerts.push("[!] Erreur ouverture Finder".to_string());
-                        }
-                    }
-                    // ── Manual scan (Connections tab)
-                    KeyCode::Char('s') | KeyCode::Char('S') if app.tab == Tab::Connections => {
-                        app.net_monitor.scan_connections();
-                        app.net_monitor.analyze_threats();
-                        app.alerts
-                            .push("[✓] Scan réseau + menaces lancé".to_string());
-                    }
-                    // ── Optimize RAM
-                    KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Overview => {
-                        app.alerts
-                            .push("[!] Optimisation RAM demandée...".to_string());
-                        // Flush caches
-                        let _ = std::process::Command::new("sync").output();
-                        let _ = std::process::Command::new("purge").output();
-                        app.alerts.clear();
-                        app.alerts
-                            .push("[✓] Cache vidé et mémoire purgée".to_string());
-                    }
-                    // ── Clean tmp files
-                    KeyCode::Char('c') | KeyCode::Char('C') if app.tab == Tab::Storage => {
-                        app.alerts.push("[!] Nettoyage tmp en cours...".to_string());
-                        let _ = std::process::Command::new("sh")
-                            .args(&["-c", "rm -rf /tmp/* /var/tmp/* 2>/dev/null"])
-                            .output();
-                        app.alerts.clear();
-                        app.alerts
-                            .push("[✓] Fichiers temporaires supprimés".to_string());
-                    }
-                    _ => {}
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
+            let proc_count = app.sys.processes().len();
+            match key.code {
+                // ── Global
+                KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                KeyCode::Tab => {
+                    app.tab = match app.tab {
+                        Tab::Overview => Tab::Processes,
+                        Tab::Processes => Tab::Connections,
+                        Tab::Connections => Tab::Storage,
+                        Tab::Storage => Tab::Overview,
+                    };
                 }
+                KeyCode::BackTab => {
+                    app.tab = match app.tab {
+                        Tab::Overview => Tab::Storage,
+                        Tab::Processes => Tab::Overview,
+                        Tab::Connections => Tab::Processes,
+                        Tab::Storage => Tab::Connections,
+                    };
+                }
+                // ── Processes navigation
+                KeyCode::Down if app.tab == Tab::Processes && app.proc_sel + 1 < proc_count => {
+                    app.proc_sel += 1;
+                    if app.proc_sel >= app.proc_off + PROC_ROWS {
+                        app.proc_off += 1;
+                    }
+                }
+                KeyCode::Up if app.tab == Tab::Processes && app.proc_sel > 0 => {
+                    app.proc_sel -= 1;
+                    if app.proc_sel < app.proc_off {
+                        app.proc_off = app.proc_off.saturating_sub(1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Char('K') if app.tab == Tab::Processes => {
+                    app.kill_selected()
+                }
+                KeyCode::Char('c') if app.tab == Tab::Processes => {
+                    app.sort_by = SortBy::Cpu;
+                    app.sort_desc = true;
+                }
+                KeyCode::Char('m') if app.tab == Tab::Processes => {
+                    app.sort_by = SortBy::Memory;
+                    app.sort_desc = true;
+                }
+                KeyCode::Char('p') if app.tab == Tab::Processes => {
+                    app.sort_by = SortBy::Pid;
+                    app.sort_desc = false;
+                }
+                KeyCode::Char('n') if app.tab == Tab::Processes => {
+                    app.sort_by = SortBy::Name;
+                    app.sort_desc = false;
+                }
+                // ── Connections scroll
+                KeyCode::Down if app.tab == Tab::Connections => {
+                    app.conn_off = app.conn_off.saturating_add(1);
+                }
+                KeyCode::Up if app.tab == Tab::Connections => {
+                    app.conn_off = app.conn_off.saturating_sub(1);
+                }
+                KeyCode::PageDown if app.tab == Tab::Connections => {
+                    app.conn_off = app.conn_off.saturating_add(10);
+                }
+                KeyCode::PageUp if app.tab == Tab::Connections => {
+                    app.conn_off = app.conn_off.saturating_sub(10);
+                }
+                // ── Storage navigation (folder selection)
+                KeyCode::Down
+                    if app.tab == Tab::Storage
+                        && app.storage_sel + 1 < app.disk_analyzer.items.len() =>
+                {
+                    app.storage_sel += 1;
+                }
+                KeyCode::Up if app.tab == Tab::Storage => {
+                    app.storage_sel = app.storage_sel.saturating_sub(1);
+                }
+                KeyCode::Enter if app.tab == Tab::Storage => {
+                    app.disk_analyzer.enter_folder(app.storage_sel);
+                    app.storage_sel = 0; // Reset selection when entering folder
+                }
+                KeyCode::Backspace if app.tab == Tab::Storage => {
+                    app.disk_analyzer.go_back();
+                    app.storage_sel = 0;
+                }
+                KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Storage => {
+                    if app.disk_analyzer.open_in_finder(app.storage_sel) {
+                        app.alerts.push("[✓] Ouvert dans Finder".to_string());
+                    } else {
+                        app.alerts.push("[!] Erreur ouverture Finder".to_string());
+                    }
+                }
+                // ── Manual scan (Connections tab)
+                KeyCode::Char('s') | KeyCode::Char('S') if app.tab == Tab::Connections => {
+                    app.net_monitor.scan_connections();
+                    app.net_monitor.analyze_threats();
+                    app.alerts
+                        .push("[✓] Scan réseau + menaces lancé".to_string());
+                }
+                // ── Optimize RAM
+                KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Overview => {
+                    app.alerts
+                        .push("[!] Optimisation RAM demandée...".to_string());
+                    // Flush caches
+                    let _ = std::process::Command::new("sync").output();
+                    let _ = std::process::Command::new("purge").output();
+                    app.alerts.clear();
+                    app.alerts
+                        .push("[✓] Cache vidé et mémoire purgée".to_string());
+                }
+                // ── Clean tmp files
+                KeyCode::Char('c') | KeyCode::Char('C') if app.tab == Tab::Storage => {
+                    app.alerts.push("[!] Nettoyage tmp en cours...".to_string());
+                    let _ = std::process::Command::new("sh")
+                        .args(["-c", "rm -rf /tmp/* /var/tmp/* 2>/dev/null"])
+                        .output();
+                    app.alerts.clear();
+                    app.alerts
+                        .push("[✓] Fichiers temporaires supprimés".to_string());
+                }
+                _ => {}
             }
         }
 

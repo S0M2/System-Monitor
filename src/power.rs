@@ -47,7 +47,7 @@ impl PowerMonitor {
     /// Parse battery info from pmset on macOS
     fn get_battery_info(&self) -> Option<BatteryStatus> {
         // Get battery percentage and charging status
-        let output = Command::new("pmset").args(&["-g", "batt"]).output().ok()?;
+        let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
 
         let text = String::from_utf8(output.stdout).ok()?;
 
@@ -60,24 +60,22 @@ impl PowerMonitor {
                 is_charging = line.contains("AC Power");
 
                 // Extract percentage: "78%; discharging; 4:25 remaining"
-                if let Some(pct_part) = line.split('%').next() {
-                    if let Some(num_str) = pct_part.split_whitespace().last() {
-                        percentage = num_str.parse().unwrap_or(0.0);
-                    }
+                if let Some(pct_part) = line.split('%').next()
+                    && let Some(num_str) = pct_part.split_whitespace().last()
+                {
+                    percentage = num_str.parse().unwrap_or(0.0);
                 }
 
                 // Extract time remaining
-                if let Some(time_part) = line.split("remaining").next() {
-                    if let Some(time_str) = time_part.split(';').last() {
-                        let time_str = time_str.trim();
-                        let parts: Vec<&str> = time_str.split(':').collect();
-                        if parts.len() >= 2 {
-                            if let (Ok(h), Ok(m)) =
-                                (parts[0].parse::<u32>(), parts[1].parse::<u32>())
-                            {
-                                time_remaining = Some(h * 60 + m);
-                            }
-                        }
+                if let Some(time_part) = line.split("remaining").next()
+                    && let Some(time_str) = time_part.split(';').next_back()
+                {
+                    let time_str = time_str.trim();
+                    let parts: Vec<&str> = time_str.split(':').collect();
+                    if parts.len() >= 2
+                        && let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+                    {
+                        time_remaining = Some(h * 60 + m);
                     }
                 }
             }
@@ -159,21 +157,20 @@ impl PowerMonitor {
         // On typical MacBook Air: 5-20W depending on activity
         // We'll use a default and try to refine it
 
-        if let Ok(output) = Command::new("top").args(&["-l", "1", "-n", "0"]).output() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
-                // Try to extract CPU utilization
-                for line in text.lines() {
-                    if line.contains("CPU usage") {
-                        // Parse CPU usage
-                        if let Some(val) = line.split(':').nth(1) {
-                            if let Some(idle_part) = val.split("idle").next() {
-                                if let Ok(idle) = idle_part.trim_end_matches('%').parse::<f64>() {
-                                    let usage = 100.0 - idle;
-                                    // Estimate power: base 2W + usage * 20W
-                                    return 2000.0 + (usage * 200.0);
-                                }
-                            }
-                        }
+        if let Ok(output) = Command::new("top").args(["-l", "1", "-n", "0"]).output()
+            && let Ok(text) = String::from_utf8(output.stdout)
+        {
+            // Try to extract CPU utilization
+            for line in text.lines() {
+                if line.contains("CPU usage") {
+                    // Parse CPU usage
+                    if let Some(val) = line.split(':').nth(1)
+                        && let Some(idle_part) = val.split("idle").next()
+                        && let Ok(idle) = idle_part.trim_end_matches('%').parse::<f64>()
+                    {
+                        let usage = 100.0 - idle;
+                        // Estimate power: base 2W + usage * 20W
+                        return 2000.0 + (usage * 200.0);
                     }
                 }
             }
