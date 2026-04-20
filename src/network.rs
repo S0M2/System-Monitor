@@ -61,10 +61,7 @@ impl NetworkMonitor {
         self.connections.clear();
 
         // Use lsof to get all network connections with PID and process name
-        if let Ok(output) = Command::new("lsof")
-            .args(&["-i", "-P", "-n"])
-            .output()
-        {
+        if let Ok(output) = Command::new("lsof").args(&["-i", "-P", "-n"]).output() {
             if let Ok(text) = String::from_utf8(output.stdout) {
                 for line in text.lines().skip(1) {
                     // Format: COMMAND PID ... NAME (where NAME has IP:port->IP:port info)
@@ -74,11 +71,9 @@ impl NetworkMonitor {
                             let process_name = parts[0].to_string();
                             let name_info = parts[8..].join(" "); // NAME column may have spaces
 
-                            if let Some(conn) = Self::parse_lsof_connection(
-                                &name_info,
-                                pid,
-                                &process_name,
-                            ) {
+                            if let Some(conn) =
+                                Self::parse_lsof_connection(&name_info, pid, &process_name)
+                            {
                                 self.connections.push(conn);
                             }
                         }
@@ -111,13 +106,15 @@ impl NetworkMonitor {
 
         // Parse local address: IP:port
         let local_addr = parts[0].trim();
-        let local_port = local_addr.rsplit(':').next()
+        let local_port = local_addr
+            .rsplit(':')
+            .next()
             .and_then(|p| p.parse::<u16>().ok())?;
 
         // Parse remote address: IP:port (state)
         let remote_part = parts[1];
         let remote_addr = remote_part.split(' ').next().unwrap_or("");
-        
+
         // Extract IP and port from remote_addr (format: IP:port)
         let remote_parts: Vec<&str> = remote_addr.rsplit(':').collect();
         if remote_parts.is_empty() {
@@ -127,7 +124,12 @@ impl NetworkMonitor {
         let remote_port = remote_parts[0].parse::<u16>().ok()?;
         let remote_ip = if remote_parts.len() > 1 {
             // Rejoin the IP parts (handles IPv4 with dots)
-            remote_parts[1..].iter().rev().copied().collect::<Vec<_>>().join(":")
+            remote_parts[1..]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .join(":")
         } else {
             return None;
         };
@@ -159,7 +161,7 @@ impl NetworkMonitor {
     fn decode_process_name(name: &str) -> String {
         let mut result = String::new();
         let mut chars = name.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '\\' && chars.peek() == Some(&'x') {
                 // Parse \xHH format
@@ -181,7 +183,7 @@ impl NetworkMonitor {
                 result.push(c);
             }
         }
-        
+
         result
     }
 
@@ -236,10 +238,7 @@ impl NetworkMonitor {
                                         .as_str()
                                         .unwrap_or("XX")
                                         .to_string(),
-                                    city: data["city"]
-                                        .as_str()
-                                        .unwrap_or("Unknown")
-                                        .to_string(),
+                                    city: data["city"].as_str().unwrap_or("Unknown").to_string(),
                                     latitude: data["lat"].as_f64().unwrap_or(0.0),
                                     longitude: data["lon"].as_f64().unwrap_or(0.0),
                                     is_risky: Self::is_risky_country(
@@ -274,7 +273,7 @@ impl NetworkMonitor {
         // First pass: collect IPs that need geolocation
         let mut ips_to_fetch: Vec<String> = Vec::new();
         for conn in &self.connections {
-            if !self.geo_cache.contains_key(&conn.remote_ip) 
+            if !self.geo_cache.contains_key(&conn.remote_ip)
                 && !conn.remote_ip.contains(":")  // Skip IPv6
                 && conn.remote_ip != "127.0.0.1"
                 && !conn.remote_ip.starts_with("192.168.")

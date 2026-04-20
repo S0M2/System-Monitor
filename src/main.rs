@@ -10,22 +10,22 @@ use std::{
 };
 use sysinfo::{Components, Disks, Networks, System};
 
-mod network;
-mod process;
-mod power;
 mod disk_analyzer;
+mod network;
+mod power;
+mod process;
 
-use network::NetworkMonitor;
-use process::ProcessMonitor;
-use power::PowerMonitor;
 use disk_analyzer::DiskAnalyzer;
+use network::NetworkMonitor;
+use power::PowerMonitor;
+use process::ProcessMonitor;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const HISTORY_LEN: usize = 60;
 const TICK_MS: u64 = 1000;
-const NETWORK_SCAN_INTERVAL: u64 = 15000;  // Scan network every 15 seconds
-const PROCESS_SCAN_INTERVAL: u64 = 15000;  // Scan processes every 15 seconds
-const BATTERY_SCAN_INTERVAL: u64 = 15000;  // Update battery every 15 seconds
+const NETWORK_SCAN_INTERVAL: u64 = 15000; // Scan network every 15 seconds
+const PROCESS_SCAN_INTERVAL: u64 = 15000; // Scan processes every 15 seconds
+const BATTERY_SCAN_INTERVAL: u64 = 15000; // Update battery every 15 seconds
 
 // ─── Color palette ───────────────────────────────────────────────────────────
 const LIME: Color = Color::Rgb(50, 255, 100);
@@ -41,7 +41,7 @@ const DARK: Color = Color::Rgb(20, 20, 30);
 enum Tab {
     Overview,
     Processes,
-    Connections,      // Network + Threats combined
+    Connections, // Network + Threats combined
     Storage,
 }
 
@@ -75,7 +75,7 @@ struct App {
     tab: Tab,
     proc_sel: usize,
     proc_off: usize,
-    conn_off: usize,       // Scroll offset for connections table
+    conn_off: usize, // Scroll offset for connections table
     sort_by: SortBy,
     sort_desc: bool,
 
@@ -129,13 +129,13 @@ impl App {
             disk_analyzer: {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
                 let analyzer = DiskAnalyzer::new(&home);
-                
+
                 // Request Full Disk Access permission on macOS
                 // This triggers the permission dialog by trying to access protected directories
                 let _ = std::process::Command::new("sh")
                     .args(&["-c", "ls -la ~/Library/Mail 2>/dev/null | head -1"])
                     .output();
-                
+
                 analyzer
             },
             storage_sel: 0,
@@ -175,12 +175,12 @@ impl App {
             self.net_monitor.analyze_threats();
             self.last_network_scan = Instant::now();
         }
-        
+
         if self.last_process_scan.elapsed().as_millis() as u64 >= PROCESS_SCAN_INTERVAL {
             self.proc_monitor.scan(&self.sys);
             self.last_process_scan = Instant::now();
         }
-        
+
         if self.last_battery_scan.elapsed().as_millis() as u64 >= BATTERY_SCAN_INTERVAL {
             self.power_monitor.update_battery_status();
             self.power_monitor.update_process_impacts(&self.sys);
@@ -222,8 +222,10 @@ impl App {
             .filter(|t| t.risk_score > 75)
             .count();
         if critical_threats > 0 {
-            self.alerts
-                .push(format!("[THREAT] SÉCURITÉ: {} processus critique(s)", critical_threats));
+            self.alerts.push(format!(
+                "[THREAT] SÉCURITÉ: {} processus critique(s)",
+                critical_threats
+            ));
         }
 
         // Check battery health
@@ -486,7 +488,7 @@ fn main() -> io::Result<()> {
                     }
                     KeyCode::Enter if app.tab == Tab::Storage => {
                         app.disk_analyzer.enter_folder(app.storage_sel);
-                        app.storage_sel = 0;  // Reset selection when entering folder
+                        app.storage_sel = 0; // Reset selection when entering folder
                     }
                     KeyCode::Backspace if app.tab == Tab::Storage => {
                         app.disk_analyzer.go_back();
@@ -503,16 +505,19 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('s') | KeyCode::Char('S') if app.tab == Tab::Connections => {
                         app.net_monitor.scan_connections();
                         app.net_monitor.analyze_threats();
-                        app.alerts.push("[✓] Scan réseau + menaces lancé".to_string());
+                        app.alerts
+                            .push("[✓] Scan réseau + menaces lancé".to_string());
                     }
                     // ── Optimize RAM
                     KeyCode::Char('o') | KeyCode::Char('O') if app.tab == Tab::Overview => {
-                        app.alerts.push("[!] Optimisation RAM demandée...".to_string());
+                        app.alerts
+                            .push("[!] Optimisation RAM demandée...".to_string());
                         // Flush caches
                         let _ = std::process::Command::new("sync").output();
                         let _ = std::process::Command::new("purge").output();
                         app.alerts.clear();
-                        app.alerts.push("[✓] Cache vidé et mémoire purgée".to_string());
+                        app.alerts
+                            .push("[✓] Cache vidé et mémoire purgée".to_string());
                     }
                     // ── Clean tmp files
                     KeyCode::Char('c') | KeyCode::Char('C') if app.tab == Tab::Storage => {
@@ -521,7 +526,8 @@ fn main() -> io::Result<()> {
                             .args(&["-c", "rm -rf /tmp/* /var/tmp/* 2>/dev/null"])
                             .output();
                         app.alerts.clear();
-                        app.alerts.push("[✓] Fichiers temporaires supprimés".to_string());
+                        app.alerts
+                            .push("[✓] Fichiers temporaires supprimés".to_string());
                     }
                     _ => {}
                 }
@@ -634,7 +640,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             "[↑↓] Naviguer   [K] Tuer   [C] CPU   [M] Mém   [P] PID   [N] Nom   [Q] Quitter"
         }
         Tab::Connections => "[TAB] Changer   [↑↓] Scroller   [S] Scanner   [Q] Quitter",
-        Tab::Storage => "[TAB] Changer   [↑↓] Sélectionner   [Enter] Ouvrir   [O] Finder   [BS] Retour   [C] Nettoyer   [Q] Quitter",
+        Tab::Storage => {
+            "[TAB] Changer   [↑↓] Sélectionner   [Enter] Ouvrir   [O] Finder   [BS] Retour   [C] Nettoyer   [Q] Quitter"
+        }
     };
     f.render_widget(
         Paragraph::new(hint)
@@ -807,8 +815,12 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 
 // ─── Processes ────────────────────────────────────────────────────────────────
 fn draw_processes(f: &mut Frame, app: &App, area: Rect) {
-    let [table_area, power_area, detail_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(8), Constraint::Length(6)]).areas(area);
+    let [table_area, power_area, detail_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(8),
+        Constraint::Length(6),
+    ])
+    .areas(area);
 
     let procs = app.sorted_procs();
     let total_ram = app.sys.total_memory() as f64;
@@ -918,16 +930,18 @@ fn draw_processes(f: &mut Frame, app: &App, area: Rect) {
             ],
         )
         .header(
-            Row::new(["Top Consommateurs", "CPU%", "Puissance"])
-                .style(
-                    Style::default()
-                        .fg(LIME)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                ),
+            Row::new(["Top Consommateurs", "CPU%", "Puissance"]).style(
+                Style::default()
+                    .fg(LIME)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
         )
         .block(
             Block::bordered()
-                .title(format!(" [ PUISSANCE ] Système: {:.0} mW", app.power_monitor.total_system_power_mw))
+                .title(format!(
+                    " [ PUISSANCE ] Système: {:.0} mW",
+                    app.power_monitor.total_system_power_mw
+                ))
                 .border_style(Style::default().fg(ORANGE)),
         )
         .column_spacing(1),
@@ -1018,13 +1032,21 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
     let summary_color = if suspicious > 0 { RED } else { LIME };
 
     f.render_widget(
-        Paragraph::new(format!("Total: {} │ Menaces: {} │ Whitelistées: {}", total, suspicious, whitelisted))
-            .block(
-                Block::bordered()
-                    .title(" [ CONNEXIONS ] ")
-                    .border_style(Style::default().fg(summary_color)),
-            ),
-        Rect { x: table_area.x, y: table_area.y, width: table_area.width, height: 2 },
+        Paragraph::new(format!(
+            "Total: {} │ Menaces: {} │ Whitelistées: {}",
+            total, suspicious, whitelisted
+        ))
+        .block(
+            Block::bordered()
+                .title(" [ CONNEXIONS ] ")
+                .border_style(Style::default().fg(summary_color)),
+        ),
+        Rect {
+            x: table_area.x,
+            y: table_area.y,
+            width: table_area.width,
+            height: 2,
+        },
     );
 
     let connections_area = Rect {
@@ -1060,8 +1082,7 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
 
             Row::new([
                 Cell::from(icon).style(Style::default().fg(status_color)),
-                Cell::from(threat.connection.process_name.clone())
-                    .style(Style::default().fg(CYAN)),
+                Cell::from(threat.connection.process_name.clone()).style(Style::default().fg(CYAN)),
                 Cell::from(threat.connection.remote_ip.clone())
                     .style(Style::default().fg(status_color)),
                 Cell::from(threat.connection.remote_port.to_string())
@@ -1084,12 +1105,11 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
             ],
         )
         .header(
-            Row::new(["", "Processus", "IP", "Port", "Proto"])
-                .style(
-                    Style::default()
-                        .fg(LIME)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                ),
+            Row::new(["", "Processus", "IP", "Port", "Proto"]).style(
+                Style::default()
+                    .fg(LIME)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
         )
         .column_spacing(1),
         connections_area,
@@ -1099,8 +1119,8 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
 // ─── Storage ──────────────────────────────────────────────────────────────────
 // ─── Storage (Hierarchical Folder Analysis) ──────────────────────────────────
 fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
-    let [path_area, table_area] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
-        .areas(area);
+    let [path_area, table_area] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
     // Current path display
     let current_path = app.disk_analyzer.current_path_str();
@@ -1125,29 +1145,36 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, item)| {
             let is_selected = i == app.storage_sel;
             let pct = disk_analyzer::calc_percentage(item.size, total_size);
-            
+
             // Color by type: Folders are CYAN, Files are LIME
             let name_color = if item.is_dir {
-                CYAN  // Folders
+                CYAN // Folders
             } else {
-                LIME  // Files
-            };
-            
-            let size_color = if item.size > 10 * 1024 * 1024 * 1024 {
-                RED  // > 10GB
-            } else if item.size > 1024 * 1024 * 1024 {
-                ORANGE  // > 1GB
-            } else if item.size > 1024 * 1024 {
-                LIME  // > 1MB
-            } else {
-                Color::DarkGray  // < 1MB
+                LIME // Files
             };
 
-            let bar_width = if total_size > 0 { ((pct / 100.0) * 20.0) as usize } else { 0 };
+            let size_color = if item.size > 10 * 1024 * 1024 * 1024 {
+                RED // > 10GB
+            } else if item.size > 1024 * 1024 * 1024 {
+                ORANGE // > 1GB
+            } else if item.size > 1024 * 1024 {
+                LIME // > 1MB
+            } else {
+                Color::DarkGray // < 1MB
+            };
+
+            let bar_width = if total_size > 0 {
+                ((pct / 100.0) * 20.0) as usize
+            } else {
+                0
+            };
             let bar = "█".repeat(bar_width) + &" ".repeat(20 - bar_width);
 
             let style = if is_selected {
-                Style::default().bg(Color::Rgb(30, 50, 70)).fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::Rgb(30, 50, 70))
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -1155,14 +1182,11 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
             Row::new([
                 Cell::from(format!("[{}]", if is_selected { "→" } else { " " }))
                     .style(style.fg(CYAN)),
-                Cell::from(item.name.clone())
-                    .style(style.fg(name_color)),
-                Cell::from(format!("[{}]", bar))
-                    .style(style.fg(size_color)),
+                Cell::from(item.name.clone()).style(style.fg(name_color)),
+                Cell::from(format!("[{}]", bar)).style(style.fg(size_color)),
                 Cell::from(disk_analyzer::format_bytes(item.size))
                     .style(style.fg(size_color).add_modifier(Modifier::BOLD)),
-                Cell::from(format!("{:.1}%", pct))
-                    .style(style.fg(size_color)),
+                Cell::from(format!("{:.1}%", pct)).style(style.fg(size_color)),
             ])
         })
         .collect();
@@ -1179,12 +1203,11 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
             ],
         )
         .header(
-            Row::new(["", "Dossier", "Usage", "Taille", "%"])
-                .style(
-                    Style::default()
-                        .fg(LIME)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                ),
+            Row::new(["", "Dossier", "Usage", "Taille", "%"]).style(
+                Style::default()
+                    .fg(LIME)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
         )
         .block(
             Block::bordered()
@@ -1192,7 +1215,13 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
                     " [ ANALYSE HIÉRARCHIQUE ] Total: {} ",
                     disk_analyzer::format_bytes(total_size)
                 ))
-                .border_style(Style::default().fg(if total_size > 500 * 1024 * 1024 * 1024 { RED } else { LIME })),
+                .border_style(
+                    Style::default().fg(if total_size > 500 * 1024 * 1024 * 1024 {
+                        RED
+                    } else {
+                        LIME
+                    }),
+                ),
         )
         .column_spacing(1),
         table_area,
@@ -1200,4 +1229,3 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ─── End of draw functions ────────────────────────────────────────────────────
-

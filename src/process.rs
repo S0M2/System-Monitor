@@ -1,6 +1,6 @@
-use sysinfo::{Pid, System};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -67,7 +67,9 @@ impl ProcessMonitor {
         processes.sort_by(|a, b| {
             let score_a = a.1.cpu_usage() as f64 + (a.1.memory() as f64 / (1024 * 1024) as f64);
             let score_b = b.1.cpu_usage() as f64 + (b.1.memory() as f64 / (1024 * 1024) as f64);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Only check signatures for top 30 processes + any that were previously suspicious
@@ -76,7 +78,7 @@ impl ProcessMonitor {
 
         for (pid, process) in processes {
             let name = process.name().to_string_lossy().to_string();
-            let should_check_signature = checked_count < check_limit 
+            let should_check_signature = checked_count < check_limit
                 || self.processes_history.get(pid).map_or(false, |h| {
                     // Re-check if this was previously suspicious
                     self.calculate_risk_score(&ProcessSignature::default(), h, 0.0, 0) > 50
@@ -158,7 +160,7 @@ impl ProcessMonitor {
     /// SIMPLIFIED: Uses path heuristic instead of system calls (codesign/spctl are too slow)
     fn check_code_signature(&self, process_name: &str) -> ProcessSignature {
         // Quick heuristic: if process name contains known Apple/safe prefixes, consider it signed
-        let is_likely_system = process_name.starts_with("kernel") 
+        let is_likely_system = process_name.starts_with("kernel")
             || process_name.starts_with("launchd")
             || process_name.starts_with("com.apple.")
             || process_name.starts_with("kernel_task")
@@ -179,13 +181,20 @@ impl ProcessMonitor {
 
         // For other processes, quick path check (no system calls)
         let common_safe_prefixes = [
-            "/System", "/Applications", "/usr/bin", "/usr/local/bin",
-            "/opt/homebrew", "/Library", "/var", "/tmp", "/dev",
+            "/System",
+            "/Applications",
+            "/usr/bin",
+            "/usr/local/bin",
+            "/opt/homebrew",
+            "/Library",
+            "/var",
+            "/tmp",
+            "/dev",
         ];
 
-        let looks_trusted = common_safe_prefixes.iter().any(|prefix| {
-            process_name.starts_with(prefix)
-        });
+        let looks_trusted = common_safe_prefixes
+            .iter()
+            .any(|prefix| process_name.starts_with(prefix));
 
         if looks_trusted {
             return ProcessSignature {

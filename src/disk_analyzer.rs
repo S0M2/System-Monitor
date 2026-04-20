@@ -31,7 +31,7 @@ impl DiskAnalyzer {
     /// Ultra-fast scan: load current directory only (no recursion)
     pub fn scan(&mut self) {
         self.items.clear();
-        
+
         // Get parent path
         self.parent_path = self.current_path.parent().map(|p| p.to_path_buf());
 
@@ -39,7 +39,7 @@ impl DiskAnalyzer {
         if let Ok(entries) = fs::read_dir(&self.current_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                
+
                 // Skip hidden files/folders
                 if path
                     .file_name()
@@ -77,9 +77,9 @@ impl DiskAnalyzer {
         // Sort by size descending, but directories first
         self.items.sort_by(|a, b| {
             match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,   // dirs first
+                (true, false) => std::cmp::Ordering::Less, // dirs first
                 (false, true) => std::cmp::Ordering::Greater,
-                _ => b.size.cmp(&a.size),                   // then by size
+                _ => b.size.cmp(&a.size), // then by size
             }
         });
     }
@@ -105,13 +105,13 @@ impl DiskAnalyzer {
         if index < self.items.len() {
             let path = &self.items[index].path;
             let path_str = path.to_string_lossy().to_string();
-            
+
             // Use 'open -R' to reveal the file/folder in Finder
             let result = std::process::Command::new("open")
                 .arg("-R")
                 .arg(&path_str)
                 .output();
-            
+
             return result.is_ok();
         }
         false

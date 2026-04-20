@@ -1,5 +1,5 @@
-use sysinfo::{Pid, System};
 use std::process::Command;
+use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -20,7 +20,7 @@ pub struct ProcessPowerImpact {
     pub name: String,
     pub cpu_percent: f64,
     pub memory_mb: f64,
-    pub estimated_power_mw: f64, // Milliwatts
+    pub estimated_power_mw: f64,         // Milliwatts
     pub battery_drain_percent_hour: f64, // How much battery % this process drains per hour
 }
 
@@ -47,10 +47,7 @@ impl PowerMonitor {
     /// Parse battery info from pmset on macOS
     fn get_battery_info(&self) -> Option<BatteryStatus> {
         // Get battery percentage and charging status
-        let output = Command::new("pmset")
-            .args(&["-g", "batt"])
-            .output()
-            .ok()?;
+        let output = Command::new("pmset").args(&["-g", "batt"]).output().ok()?;
 
         let text = String::from_utf8(output.stdout).ok()?;
 
@@ -75,7 +72,8 @@ impl PowerMonitor {
                         let time_str = time_str.trim();
                         let parts: Vec<&str> = time_str.split(':').collect();
                         if parts.len() >= 2 {
-                            if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+                            if let (Ok(h), Ok(m)) =
+                                (parts[0].parse::<u32>(), parts[1].parse::<u32>())
                             {
                                 time_remaining = Some(h * 60 + m);
                             }
@@ -103,7 +101,7 @@ impl PowerMonitor {
     fn get_battery_health(&self) -> (f64, u32, u32, u32) {
         // SIMPLIFIED: Just return reasonable defaults
         // pmset already gives us the percentage, no need for heavy ioreg calls
-        (100.0, 0, 5000, 5000)  // health%, cycles, max_cap, cur_cap (dummy values)
+        (100.0, 0, 5000, 5000) // health%, cycles, max_cap, cur_cap (dummy values)
     }
 
     /// Calculate power impact of processes
@@ -148,8 +146,11 @@ impl PowerMonitor {
         }
 
         // Sort by power impact
-        self.process_impacts
-            .sort_by(|a, b| b.estimated_power_mw.partial_cmp(&a.estimated_power_mw).unwrap());
+        self.process_impacts.sort_by(|a, b| {
+            b.estimated_power_mw
+                .partial_cmp(&a.estimated_power_mw)
+                .unwrap()
+        });
     }
 
     /// Get total system power usage (requires pmset)
@@ -158,10 +159,7 @@ impl PowerMonitor {
         // On typical MacBook Air: 5-20W depending on activity
         // We'll use a default and try to refine it
 
-        if let Ok(output) = Command::new("top")
-            .args(&["-l", "1", "-n", "0"])
-            .output()
-        {
+        if let Ok(output) = Command::new("top").args(&["-l", "1", "-n", "0"]).output() {
             if let Ok(text) = String::from_utf8(output.stdout) {
                 // Try to extract CPU utilization
                 for line in text.lines() {
@@ -190,9 +188,9 @@ impl PowerMonitor {
         match self.battery.as_ref() {
             Some(b) => match b.health_percentage {
                 h if h >= 80.0 => "[OK]", // Good
-                h if h >= 60.0 => "[~]", // Fair
-                h if h >= 40.0 => "[!]", // Poor
-                _ => "[CRITICAL]", // Critical
+                h if h >= 60.0 => "[~]",  // Fair
+                h if h >= 40.0 => "[!]",  // Poor
+                _ => "[CRITICAL]",        // Critical
             },
             None => "[?]",
         }
