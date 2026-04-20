@@ -1,23 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use walkdir::WalkDir;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
-pub struct FolderEntry {
+pub struct FileEntry {
     pub path: PathBuf,
     pub size: u64,
     pub name: String,
+    pub is_dir: bool,
 }
 
-/// Disk analyzer for hierarchical folder size scanning (optimized)
+/// Disk analyzer - shows immediate items (files + dirs) in current folder
 pub struct DiskAnalyzer {
     pub current_path: PathBuf,
-    pub folders: Vec<FolderEntry>,
+    pub items: Vec<FileEntry>,
     pub parent_path: Option<PathBuf>,
-    size_cache: Arc<Mutex<HashMap<PathBuf, u64>>>,
 }
 
 impl DiskAnalyzer {
@@ -25,25 +21,22 @@ impl DiskAnalyzer {
         let path = PathBuf::from(start_path);
         let mut analyzer = Self {
             current_path: path.clone(),
-            folders: Vec::new(),
+            items: Vec::new(),
             parent_path: None,
-            size_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         analyzer.scan();
         analyzer
     }
 
-    /// Fast scan: get folder sizes with caching (parallel WalkDir)
+    /// Ultra-fast scan: load current directory only (no recursion)
     pub fn scan(&mut self) {
-        self.folders.clear();
+        self.items.clear();
         
         // Get parent path
         self.parent_path = self.current_path.parent().map(|p| p.to_path_buf());
 
-        // Scan immediate subdirectories
+        // Scan immediate items in current directory only
         if let Ok(entries) = fs::read_dir(&self.current_path) {
-            let mut temp_folders = Vec::new();
-            
             for entry in entries.flatten() {
                 let path = entry.path();
                 
@@ -57,70 +50,44 @@ impl DiskAnalyzer {
                     continue;
                 }
 
-                if path.is_dir() {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("Unknown")
-                        .to_string();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
 
-                    // Check cache first
-                    let size = {
-                        let cache = self.size_cache.lock().unwrap();
-                        cache.get(&path).copied()
-                    }.unwrap_or_else(|| {
-                        // Calculate size with timeout-like behavior (limit depth for speed)
-                        let size = Self::calculate_dir_size_fast(&path);
-                        
-                        // Cache result
-                        if let Ok(mut cache) = self.size_cache.lock() {
-                            cache.insert(path.clone(), size);
-                        }
-                        size
-                    });
+                // Get metadata WITHOUT recursion
+                let (size, is_dir) = if let Ok(metadata) = entry.metadata() {
+                    let sz = metadata.len();
+                    let is_d = metadata.is_dir();
+                    (sz, is_d)
+                } else {
+                    (0, path.is_dir())
+                };
 
-                    temp_folders.push(FolderEntry {
-                        path,
-                        size,
-                        name,
-                    });
-                }
-            }
-
-            self.folders = temp_folders;
-        }
-
-        // Sort by size descending
-        self.folders.sort_by(|a, b| b.size.cmp(&a.size));
-    }
-
-    /// Fast size calculation with early-exit heuristic
-    fn calculate_dir_size_fast(path: &Path) -> u64 {
-        // Use a simple counter to avoid infinite loops on deep directories
-        let mut total: u64 = 0;
-        let mut file_count = 0;
-        const MAX_FILES: usize = 50000; // Stop after scanning 50k files
-        
-        for entry in WalkDir::new(path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .take(MAX_FILES)
-        {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
-                    total = total.saturating_add(metadata.len());
-                    file_count += 1;
-                }
+                self.items.push(FileEntry {
+                    path,
+                    size,
+                    name,
+                    is_dir,
+                });
             }
         }
-        
-        total
+
+        // Sort by size descending, but directories first
+        self.items.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,   // dirs first
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b.size.cmp(&a.size),                   // then by size
+            }
+        });
     }
 
-    /// Navigate into a subdirectory
+    /// Navigate into a subdirectory (only if selected item is a directory)
     pub fn enter_folder(&mut self, index: usize) {
-        if index < self.folders.len() {
-            self.current_path = self.folders[index].path.clone();
+        if index < self.items.len() && self.items[index].is_dir {
+            self.current_path = self.items[index].path.clone();
             self.scan();
         }
     }
@@ -133,14 +100,18 @@ impl DiskAnalyzer {
         }
     }
 
-    /// Open selected folder in Finder
+    /// Open selected item in Finder
     pub fn open_in_finder(&self, index: usize) -> bool {
-        if index < self.folders.len() {
-            let path = &self.folders[index].path;
+        if index < self.items.len() {
+            let path = &self.items[index].path;
             let path_str = path.to_string_lossy().to_string();
+            
+            // Use 'open -R' to reveal the file/folder in Finder
             let result = std::process::Command::new("open")
+                .arg("-R")
                 .arg(&path_str)
                 .output();
+            
             return result.is_ok();
         }
         false
@@ -151,9 +122,9 @@ impl DiskAnalyzer {
         self.current_path.to_string_lossy().to_string()
     }
 
-    /// Get total size of all folders in current view
+    /// Get total size of all items in current view
     pub fn total_size(&self) -> u64 {
-        self.folders.iter().map(|f| f.size).sum()
+        self.items.iter().map(|f| f.size).sum()
     }
 }
 

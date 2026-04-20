@@ -479,7 +479,7 @@ fn main() -> io::Result<()> {
                     }
                     // ── Storage navigation (folder selection)
                     KeyCode::Down if app.tab == Tab::Storage => {
-                        if app.storage_sel + 1 < app.disk_analyzer.folders.len() {
+                        if app.storage_sel + 1 < app.disk_analyzer.items.len() {
                             app.storage_sel += 1;
                         }
                     }
@@ -1117,25 +1117,35 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
         path_area,
     );
 
-    // Folder list with sizes
+    // File/Folder list with sizes
     let total_size = app.disk_analyzer.total_size();
     let rows: Vec<Row> = app
         .disk_analyzer
-        .folders
+        .items
         .iter()
         .enumerate()
-        .map(|(i, folder)| {
+        .map(|(i, item)| {
             let is_selected = i == app.storage_sel;
-            let pct = disk_analyzer::calc_percentage(folder.size, total_size);
-            let size_color = if folder.size > 10 * 1024 * 1024 * 1024 {
-                RED  // > 10GB
-            } else if folder.size > 1024 * 1024 * 1024 {
-                ORANGE  // > 1GB
+            let pct = disk_analyzer::calc_percentage(item.size, total_size);
+            
+            // Color by type/size
+            let (type_icon, type_color) = if item.is_dir {
+                ("📁", CYAN)
             } else {
-                LIME  // < 1GB
+                ("📄", LIME)
+            };
+            
+            let size_color = if item.size > 10 * 1024 * 1024 * 1024 {
+                RED  // > 10GB
+            } else if item.size > 1024 * 1024 * 1024 {
+                ORANGE  // > 1GB
+            } else if item.size > 1024 * 1024 {
+                LIME  // > 1MB
+            } else {
+                Color::DarkGray  // < 1MB
             };
 
-            let bar_width = ((pct / 100.0) * 20.0) as usize;
+            let bar_width = if total_size > 0 { ((pct / 100.0) * 20.0) as usize } else { 0 };
             let bar = "█".repeat(bar_width) + &" ".repeat(20 - bar_width);
 
             let style = if is_selected {
@@ -1147,11 +1157,11 @@ fn draw_storage(f: &mut Frame, app: &App, area: Rect) {
             Row::new([
                 Cell::from(format!("[{}]", if is_selected { "→" } else { " " }))
                     .style(style.fg(CYAN)),
-                Cell::from(folder.name.clone())
-                    .style(style.fg(LIME)),
+                Cell::from(format!("{} {}", type_icon, item.name))
+                    .style(style.fg(type_color)),
                 Cell::from(format!("[{}]", bar))
                     .style(style.fg(size_color)),
-                Cell::from(disk_analyzer::format_bytes(folder.size))
+                Cell::from(disk_analyzer::format_bytes(item.size))
                     .style(style.fg(size_color).add_modifier(Modifier::BOLD)),
                 Cell::from(format!("{:.1}%", pct))
                     .style(style.fg(size_color)),
